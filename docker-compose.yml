@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: recomendacao_db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-recomendacao}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-recomendacao}
+      POSTGRES_DB: ${POSTGRES_DB:-recomendacao}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recomendacao"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    container_name: recomendacao_api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://recomendacao:recomendacao@postgres:5432/recomendacao
+      - MODEL_PATH=${MODEL_PATH:-paraphrase-multilingual-mpnet-base-v2}
+      - TOP_K_DEFAULT=10
+    volumes:
+      # monta os CSVs e o modelo fine-tuned sem rebuildar a imagem
+      - ./dados:/app/dados
+      - ./modelos:/app/modelos
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  postgres_data:
