@@ -48,11 +48,11 @@ cp .env.example .env
 #    e atualize MODEL_PATH no .env
 
 # 4. Sobe o banco e a API
-docker compose up -d postgres
-docker compose up -d api
+docker compose up -d db_dados db_embeddings rabbitmq
+docker compose up -d api worker
 
 # 5. Executa o seed (importa CSVs + gera embeddings — leva alguns minutos pelo SBERT)
-docker compose run api python -m app.scripts.seed_and_embed
+docker compose run --rm api python -m app.scripts.seed_and_embed
 ```
 
 ## Endpoints
@@ -123,6 +123,18 @@ Mostra qual modelo está carregado e quantos embeddings existem.
 ```bash
 curl http://localhost:8000/admin/status \
   -H "x-admin-token: troque_em_producao"
+
+### `GET /admin/infra-status`
+Mostra a saúde operacional dos dois bancos, broker RabbitMQ e backlog da fila.
+
+```bash
+curl http://localhost:8000/admin/infra-status \
+  -H "x-admin-token: troque_em_producao"
+```
+
+### `POST /candidatos/indexar` e `POST /vagas/indexar`
+Agora esses endpoints **enfileiram** indexação assíncrona (HTTP 202) em vez de recalcular online.
+O processamento ocorre no serviço `worker` via RabbitMQ.
 ```
 
 ## Trocando o modelo

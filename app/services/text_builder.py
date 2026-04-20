@@ -4,7 +4,7 @@ Nomes de coluna alinhados com o schema Prisma oficial do sistema original.
 
 Ordem de prioridade no texto (maior peso semântico primeiro):
   Candidato: habilidades → outras_habilidades → experiências → formações → deficiências → adaptações → local
-  Vaga:      título → habilidades → conhecimentos → diferenciais → certificações → função/área → descrição → local
+    Vaga:      título → habilidades → conhecimentos → diferenciais → certificações → função/área → escolaridade/modalidade/regime → descrição → local
 """
 import re
 import nltk
@@ -20,6 +20,8 @@ _STOPWORDS_CUSTOM = {
     # Rótulos estruturais que não carregam semântica de cargo
     "título", "descrição", "função", "área", "atuação",
     "escolaridade", "mínima", "desejada",
+    "vaga", "vagas", "oportunidade", "oportunidades",
+    "exclusiva", "exclusivo", "pcd",
     # Soft skills genéricas — foco em hard skills para o SBERT
     "comunicação", "proatividade", "organização", "dinamismo",
     "resolução", "problemas", "desejável",
@@ -36,6 +38,53 @@ def limpar_texto(texto: str) -> str:
     texto = re.sub(r"[^a-z0-9áéíóúâêîôûàãõç\s\-]", "", texto)
     tokens = [w for w in texto.split() if w not in STOPWORDS_FINAL and len(w) > 2]
     return " ".join(tokens)
+
+
+def _expandir_descricao_vaga_curta(
+    titulo: str,
+    funcao: str,
+    area: str | None,
+    modalidade: str | None,
+    escolaridade_desejada: str | None,
+    regime: str | None,
+    habilidades: list[str],
+    conhecimentos: list[str],
+    diferenciais: list[str],
+    certificacoes: list[str],
+    descricao: str | None,
+) -> str:
+    descricao_base = str(descricao or "").strip()
+    if len(descricao_base) >= 180:
+        return descricao_base
+
+    termos = [
+        *[str(item).strip() for item in habilidades[:4] if str(item).strip()],
+        *[str(item).strip() for item in conhecimentos[:3] if str(item).strip()],
+        *[str(item).strip() for item in diferenciais[:2] if str(item).strip()],
+        *[str(item).strip() for item in certificacoes[:2] if str(item).strip()],
+    ]
+
+    contexto = " ".join(
+        part
+        for part in [
+            f"funcao {funcao or titulo}" if (funcao or titulo) else "",
+            f"area {area}" if area else "",
+            f"modalidade {modalidade}" if modalidade else "",
+            f"escolaridade desejada {escolaridade_desejada}" if escolaridade_desejada else "",
+            f"regime {regime}" if regime else "",
+            f"requer {', '.join(termos)}" if termos else "",
+        ]
+        if part
+    )
+
+    bloco_extra = (
+        "Atividades e contexto: a pessoa contratada atuara no escopo da vaga, "
+        "executando rotinas relacionadas ao cargo, colaborando com o time e mantendo foco em qualidade."
+    )
+    if contexto:
+        bloco_extra = f"{bloco_extra} {contexto}."
+
+    return f"{descricao_base} {bloco_extra}".strip()[:800]
 
 
 # ── Candidato ────────────────────────────────────────────────────────────────
@@ -187,8 +236,8 @@ def montar_texto_vaga(
     por causa da PK composta.
 
     dfs esperado: vagas, vaga_habilidades_competencias, vaga_conhecimentos_tecnicos,
-                  vaga_diferenciais, vaga_certificacoes, vaga_funcoes, areas_atuacao,
-                  vaga_outra_area_atuacao, vaga_modalidades, vaga_regimes,
+                  vaga_diferenciais, vaga_certificacoes, vaga_beneficios, vaga_funcoes,
+                  areas_atuacao, vaga_outra_area_atuacao, vaga_modalidades, vaga_regimes,
                   niveis_escolaridade
     """
     vagas_df = dfs.get("vagas", pd.DataFrame())
@@ -244,6 +293,15 @@ def montar_texto_vaga(
     if not vcer.empty:
         partes.append("Certificações: " + vcer.iloc[0]["vcer_descricao"])
 
+    # 5b. Benefícios — texto adicional útil quando a vaga é muito curta
+    vben_df = dfs.get("vaga_beneficios", pd.DataFrame())
+    vben = vben_df[
+        (vben_df.get("vben_id_vaga", pd.Series(dtype=int)) == vaga_id) &
+        (vben_df.get("vben_id_empresa", pd.Series(dtype=int)) == vaga_id_empresa)
+    ]
+    if not vben.empty:
+        partes.append("Benefícios: " + " ".join(vben["vben_descricao"].dropna().astype(str).unique()))
+
     # 6. Função + Área de atuação
     vfun_df = dfs.get("vaga_funcoes", pd.DataFrame())
     if pd.notna(row.get("vaga_funcao_id")):
@@ -279,9 +337,33 @@ def montar_texto_vaga(
         if not mod.empty:
             partes.append(f"Modalidade: {mod.iloc[0]['vmod_descricao']}")
 
-    # 9. Descrição (truncada para não dominar o embedding)
+    # 8b. Regime de trabalho (quando a vaga for cadastrada com a tabela relacional)
+    vreg_df = dfs.get("vaga_regimes", pd.DataFrame())
+    if pd.notna(row.get("vaga_regime")) and not vreg_df.empty:
+        reg = vreg_df[vreg_df["vreg_id_regime"] == row["vaga_regime"]]
+        if not reg.empty:
+            partes.append(f"Regime: {reg.iloc[0]['vreg_descricao']}")
+
+    # 9. Descrição com expansão controlada para vagas curtas
     if pd.notna(row.get("vaga_descricao")):
-        partes.append(f"Detalhes: {str(row['vaga_descricao'])[:400]}")
+        habilidades_txt = vhab["vhab_descricao"].dropna().astype(str).tolist() if not vhab.empty else []
+        conhecimentos_txt = [str(vcon.iloc[0]["vcte_descricao"]) ] if not vcon.empty else []
+        diferenciais_txt = [str(vdif.iloc[0]["vdif_descricao"]) ] if not vdif.empty else []
+        certificacoes_txt = [str(vcer.iloc[0]["vcer_descricao"]) ] if not vcer.empty else []
+        detalhes = _expandir_descricao_vaga_curta(
+            titulo=str(row["vaga_titulo"]),
+            funcao=str(vfun.iloc[0]["vfun_descricao"]) if pd.notna(row.get("vaga_funcao_id")) and not vfun.empty else "",
+            area=area_desc,
+            modalidade=str(mod.iloc[0]["vmod_descricao"]) if pd.notna(row.get("vaga_modalidade")) and not vmod_df.empty and not mod.empty else "",
+            escolaridade_desejada=str(nivel.iloc[0]["nesc_descricao"]) if pd.notna(row.get("vaga_escolaridade_desejada")) and not nesc_df.empty and 'nivel' in locals() and not nivel.empty else "",
+            regime=str(reg.iloc[0]["vreg_descricao"]) if pd.notna(row.get("vaga_regime")) and not vreg_df.empty and 'reg' in locals() and not reg.empty else "",
+            habilidades=habilidades_txt,
+            conhecimentos=conhecimentos_txt,
+            diferenciais=diferenciais_txt,
+            certificacoes=certificacoes_txt,
+            descricao=str(row["vaga_descricao"]),
+        )
+        partes.append(f"Detalhes: {detalhes}")
 
     # 10. Local
     partes.append(f"Local: {row['vaga_cidade']} {row['vaga_estado']}")

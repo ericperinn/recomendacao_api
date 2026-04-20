@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import delete as sql_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import get_db_embeddings
 from app.core.config import settings
+from app.models.schema import VagaEmbedding
 from app.services.recommender import recomendar_candidatos
 
 router = APIRouter(prefix="/vagas", tags=["Vagas"])
@@ -25,7 +27,8 @@ async def get_candidatos_ranqueados(
             "False → busca na base geral independente da flag PCD."
         ),
     ),
-    db: AsyncSession = Depends(get_db),
+    debug: bool = Query(default=False, description="Inclui scores detalhados por candidato."),
+    db: AsyncSession = Depends(get_db_embeddings),
 ):
     """
     Retorna os candidatos mais compatíveis com a vaga — visão do recrutador.
@@ -37,7 +40,7 @@ async def get_candidatos_ranqueados(
     | Ampla         | True        | Apenas candidatos PCD      |
     | Ampla         | False       | Base geral                 |
     """
-    result = await recomendar_candidatos(vaga_id, top_k or settings.TOP_K_DEFAULT, filtrar_pcd, db)
+    result = await recomendar_candidatos(vaga_id, top_k or settings.TOP_K_DEFAULT, filtrar_pcd, db, debug=debug)
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
     return result
@@ -50,75 +53,69 @@ class VagaUpsertRequest(BaseModel):
     Payload para indexar (ou reindexar) uma única vaga sem reprocessar toda a base.
     """
     vaga_id: int
+    vaga_id_empresa: int = 0
     titulo: str
     cidade: str
     estado: str
     area: str = ""
+    area_livre: str = ""
     is_pcd_exclusive: bool = False
     habilidades: list[str] = []
     conhecimentos: list[str] = []
+    diferenciais: list[str] = []
+    certificacoes: list[str] = []
     funcao: str = ""
+    escolaridade_desejada: str = ""
+    modalidade: str = ""
     descricao: str = ""
 
 
 @router.post(
     "/indexar",
-    summary="Indexa ou reindexia uma única vaga",
-    status_code=201,
+    summary="Enfileira indexação de uma única vaga",
+    status_code=202,
 )
 async def indexar_vaga(
     body: VagaUpsertRequest,
-    db: AsyncSession = Depends(get_db),
 ):
     """
-    Monta o texto semântico, gera o embedding e salva/atualiza em
-    `vaga_embeddings`. Use quando o sistema principal criar ou editar uma vaga.
+    Enfileira um job de indexação para processamento assíncrono no worker.
+    Use quando o sistema principal criar ou editar uma vaga.
     """
-    from app.services.text_builder import limpar_texto
-    from app.services.embedder import EmbedderService
-    from app.models.schema import VagaEmbedding
-    import numpy as np
+    from app.services.job_queue import enqueue_index_job
 
-    partes = [f"Vaga: {body.titulo}"]
-    if body.habilidades:
-        partes.append("Requisitos: " + "; ".join(body.habilidades))
-    if body.conhecimentos:
-        partes.append("Conhecimentos: " + "; ".join(body.conhecimentos))
-    if body.funcao:
-        partes.append(f"Função: {body.funcao}")
-    if body.descricao:
-        partes.append(f"Detalhes: {body.descricao[:400]}")
-    partes.append(f"Local: {body.cidade} {body.estado}")
+    await enqueue_index_job({
+        "entidade": "vaga",
+        "payload": body.model_dump(),
+    })
 
-    texto_limpo = limpar_texto(" ".join(partes))
-    embedder    = EmbedderService.get()
-    emb         = embedder.encode([texto_limpo])[0]
-
-    existing = await db.get(VagaEmbedding, body.vaga_id)
-    if existing:
-        existing.vaga_titulo      = body.titulo
-        existing.vaga_area        = body.area
-        existing.texto_limpo      = texto_limpo
-        existing.is_pcd_exclusive = body.is_pcd_exclusive
-        existing.embedding        = emb.astype(np.float32).tobytes()
-        existing.modelo_usado     = embedder.model_path
-        acao = "atualizado"
-    else:
-        db.add(VagaEmbedding(
-            vaga_id=body.vaga_id,
-            vaga_titulo=body.titulo,
-            vaga_area=body.area,
-            texto_limpo=texto_limpo,
-            is_pcd_exclusive=body.is_pcd_exclusive,
-            embedding=emb.astype(np.float32).tobytes(),
-            modelo_usado=embedder.model_path,
-        ))
-        acao = "criado"
-
-    await db.commit()
     return {
-        "vaga_id":      body.vaga_id,
-        "texto_gerado": texto_limpo,
-        "modelo_usado": embedder.model_path,
-        "acao":         acao,
+        "vaga_id": body.vaga_id,
+        "status": "enfileirado",
     }
+
+
+# ── Deleção de embedding ──────────────────────────────────────────────────────
+
+@router.delete(
+    "/{vaga_id}",
+    summary="Remove o embedding de uma vaga",
+    status_code=200,
+)
+async def deletar_embedding_vaga(
+    vaga_id: int,
+    db: AsyncSession = Depends(get_db_embeddings),
+):
+    """
+    Remove o embedding pré-calculado da vaga do banco de embeddings.
+    Deve ser chamado pelo sistema principal quando uma vaga é deletada.
+    """
+    result = await db.execute(
+        sql_delete(VagaEmbedding).where(VagaEmbedding.vaga_id == vaga_id)
+    )
+    await db.commit()
+
+    if result.rowcount == 0:
+        return {"vaga_id": vaga_id, "status": "nao_encontrado"}
+
+    return {"vaga_id": vaga_id, "status": "removido"}

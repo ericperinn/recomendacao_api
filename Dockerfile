@@ -2,18 +2,22 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# dependências do sistema para asyncpg e sentence-transformers
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential libpq-dev && \
-    rm -rf /var/lib/apt/lists/*
+ENV PIP_DEFAULT_TIMEOUT=1200 \
+    PIP_RETRIES=20 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY constraints.txt .
 
-# baixa stopwords do NLTK na build (evita download em runtime)
+RUN pip install --no-cache-dir --retries 20 --timeout 1200 \
+    --trusted-host pypi.org \
+    --trusted-host files.pythonhosted.org \
+    -r requirements.txt
+
 RUN python -c "import nltk; nltk.download('stopwords', quiet=True)"
 
 COPY . .
 
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", 

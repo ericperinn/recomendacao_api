@@ -13,11 +13,18 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import delete, text
+from sqlalchemy import delete, text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import engine, AsyncSessionLocal, Base
+from app.core.database import (
+    engine_dados,
+    engine_embeddings,
+    AsyncSessionLocalDados,
+    AsyncSessionLocalEmbeddings,
+)
 from app.models.schema import (
+    BaseDados,
+    BaseEmbeddings,
     Candidato, Empresa, CandidatoHabilidade, CandidatoOutraHabilidade,
     CandidatoExperiencia, CandidatoFormacao, CandidatoDeficiencia,
     CandidatoOutraDeficiencia, CandidatoAdaptacao, CandidatoIdioma,
@@ -153,18 +160,26 @@ async def _inserir_csv(db: AsyncSession, nome: str, df: pd.DataFrame, modelo_orm
 
 async def _truncar_tabelas(db: AsyncSession):
     tabelas = " ,".join(ORM_MAP[nome].__tablename__ for nome in reversed(CSV_LOAD_ORDER) if nome in ORM_MAP)
-    tabelas_embedding = "candidato_embeddings, vaga_embeddings"
-    await db.execute(text(f"TRUNCATE TABLE {tabelas_embedding}, {tabelas} RESTART IDENTITY CASCADE"))
+    await db.execute(text(f"TRUNCATE TABLE {tabelas} RESTART IDENTITY CASCADE"))
     await db.commit()
-    print("  ✅ Tabelas truncadas com RESTART IDENTITY CASCADE.")
+    print("  ✅ Tabelas de dados truncadas com RESTART IDENTITY CASCADE.")
 
-async def embed_candidatos(db: AsyncSession, embedder: EmbedderService) -> int:
-    from sqlalchemy import select
-    cands = (await db.execute(select(Candidato))).scalars().all()
+
+async def _truncar_tabelas_embeddings(db: AsyncSession):
+    await db.execute(text("TRUNCATE TABLE candidato_embeddings, vaga_embeddings RESTART IDENTITY"))
+    await db.commit()
+    print("  ✅ Tabelas de embeddings truncadas.")
+
+async def embed_candidatos(
+    db_dados: AsyncSession,
+    db_embeddings: AsyncSession,
+    embedder: EmbedderService,
+    dfs: dict[str, pd.DataFrame],
+) -> int:
+    cands = (await db_dados.execute(select(Candidato))).scalars().all()
     cand_ids = [c.cand_id_candidato for c in cands]
     if not cand_ids: return 0
 
-    dfs = _load_csvs()
     textos, ids_validos, pcd_flags = [], [], []
     for cid in cand_ids:
         texto = montar_texto_candidato(cid, dfs)
@@ -177,18 +192,21 @@ async def embed_candidatos(db: AsyncSession, embedder: EmbedderService) -> int:
 
     print(f"  Encodando {len(textos)} embeddings de candidatos...")
     embeddings = embedder.encode(textos)
-    await db.execute(delete(CandidatoEmbedding))
+    await db_embeddings.execute(delete(CandidatoEmbedding))
     for cid, texto, emb, pcd in zip(ids_validos, textos, embeddings, pcd_flags):
-        db.add(CandidatoEmbedding(cand_id=cid, texto_limpo=texto, is_pcd=bool(pcd), embedding=emb.astype(np.float32).tobytes(), modelo_usado=embedder.model_path))
-    await db.commit()
+        db_embeddings.add(CandidatoEmbedding(cand_id=cid, texto_limpo=texto, is_pcd=bool(pcd), embedding=emb.astype(np.float32).tobytes(), modelo_usado=embedder.model_path))
+    await db_embeddings.commit()
     return len(ids_validos)
 
-async def embed_vagas(db: AsyncSession, embedder: EmbedderService) -> int:
-    from sqlalchemy import select
-    vagas = (await db.execute(select(Vaga))).scalars().all()
+async def embed_vagas(
+    db_dados: AsyncSession,
+    db_embeddings: AsyncSession,
+    embedder: EmbedderService,
+    dfs: dict[str, pd.DataFrame],
+) -> int:
+    vagas = (await db_dados.execute(select(Vaga))).scalars().all()
     if not vagas: return 0
 
-    dfs = _load_csvs()
     textos, metas = [], []
     for vaga in vagas:
         texto, area = montar_texto_vaga(vaga.vaga_id_vaga, vaga.vaga_id_empresa, dfs)
@@ -200,10 +218,10 @@ async def embed_vagas(db: AsyncSession, embedder: EmbedderService) -> int:
 
     print(f"  Encodando {len(textos)} embeddings de vagas...")
     embeddings = embedder.encode(textos)
-    await db.execute(delete(VagaEmbedding))
+    await db_embeddings.execute(delete(VagaEmbedding))
     for texto, emb, meta in zip(textos, embeddings, metas):
-        db.add(VagaEmbedding(vaga_id=meta["vaga_id"], vaga_id_empresa=meta["vaga_id_empresa"], vaga_titulo=meta["titulo"], vaga_area=meta["area"], texto_limpo=texto, is_pcd_exclusive=meta["is_pcd"], embedding=emb.astype(np.float32).tobytes(), modelo_usado=embedder.model_path))
-    await db.commit()
+        db_embeddings.add(VagaEmbedding(vaga_id=meta["vaga_id"], vaga_id_empresa=meta["vaga_id_empresa"], vaga_titulo=meta["titulo"], vaga_area=meta["area"], texto_limpo=texto, is_pcd_exclusive=meta["is_pcd"], embedding=emb.astype(np.float32).tobytes(), modelo_usado=embedder.model_path))
+    await db_embeddings.commit()
     return len(metas)
 
 async def main():
@@ -211,54 +229,57 @@ async def main():
     print("SEED — Importando CSVs e gerando embeddings")
     print("=" * 55)
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    async with engine_dados.begin() as conn:
+        await conn.run_sync(BaseDados.metadata.create_all)
 
-    async with AsyncSessionLocal() as db:
+    async with engine_embeddings.begin() as conn:
+        await conn.run_sync(BaseEmbeddings.metadata.create_all)
+
+    async with AsyncSessionLocalDados() as db_dados, AsyncSessionLocalEmbeddings() as db_embeddings:
         print("[1/3] Limpando dados existentes...")
-        await _truncar_tabelas(db)
+        await _truncar_tabelas_embeddings(db_embeddings)
+        await _truncar_tabelas(db_dados)
 
         print("\n[2/3] Importando CSVs...")
         dfs = _load_csvs()
-        
+
         # Inserimos as tabelas em ordem
         for nome in CSV_LOAD_ORDER:
             if nome in ORM_MAP and nome in dfs:
-                
+
                 # PROTEÇÃO ANTI-ÓRFÃOS
                 # Antes de inserir tabelas filhas de candidatos, garantimos que o ID do candidato existe no banco
                 if nome in ["candidato_experiencias", "candidato_formacoes", "candidato_deficiencias", "candidato_adaptacoes", "candidato_idiomas"]:
-                    from sqlalchemy import select
                     from app.models.schema import Candidato
-                    
+
                     # Busca todos os IDs de candidatos que foram inseridos com sucesso
-                    result = await db.execute(select(Candidato.cand_id_candidato))
+                    result = await db_dados.execute(select(Candidato.cand_id_candidato))
                     ids_validos = [row[0] for row in result.all()]
-                    
+
                     # Identifica qual é a coluna de FK no DataFrame atual
                     fk_col = next((col for col in dfs[nome].columns if "id_candidato" in col), None)
-                    
+
                     if fk_col and not dfs[nome].empty:
                         tamanho_original = len(dfs[nome])
                         # Filtra o DataFrame, mantendo apenas linhas onde a FK está na lista de IDs válidos
                         dfs[nome] = dfs[nome][dfs[nome][fk_col].isin(ids_validos)]
                         tamanho_novo = len(dfs[nome])
-                        
+
                         if tamanho_original != tamanho_novo:
                             print(f"  🧹 {nome}: Removidos {tamanho_original - tamanho_novo} registros órfãos (candidato não existe).")
 
 
-                await _inserir_csv(db, nome, dfs[nome], ORM_MAP[nome])
+                await _inserir_csv(db_dados, nome, dfs[nome], ORM_MAP[nome])
                 try:
-                    await db.commit() 
+                    await db_dados.commit()
                 except Exception as e:
                     print(f"  ❌ ERRO GRAVE ao salvar a tabela {nome}: {e}")
-                    await db.rollback()
+                    await db_dados.rollback()
 
         print("\n[3/3] Carregando modelo SBERT...")
         embedder = EmbedderService.get()
-        n_cand = await embed_candidatos(db, embedder)
-        n_vaga = await embed_vagas(db, embedder)
+        n_cand = await embed_candidatos(db_dados, db_embeddings, embedder, dfs)
+        n_vaga = await embed_vagas(db_dados, db_embeddings, embedder, dfs)
 
     print("\n" + "=" * 55)
     print(f"✅ Seed concluído: {n_cand} candidatos, {n_vaga} vagas.")

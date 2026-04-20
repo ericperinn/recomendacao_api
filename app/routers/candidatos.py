@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import delete as sql_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import get_db_embeddings
 from app.core.config import settings
+from app.models.schema import CandidatoEmbedding
 from app.services.recommender import recomendar_vagas
 
 router = APIRouter(prefix="/candidatos", tags=["Candidatos"])
@@ -18,7 +20,8 @@ router = APIRouter(prefix="/candidatos", tags=["Candidatos"])
 async def get_vagas_recomendadas(
     cand_id: int,
     top_k: int = Query(default=None, ge=1, le=50),
-    db: AsyncSession = Depends(get_db),
+    debug: bool = Query(default=False, description="Inclui scores detalhados por vaga."),
+    db: AsyncSession = Depends(get_db_embeddings),
 ):
     """
     Retorna as vagas mais compatíveis com o perfil do candidato.
@@ -27,7 +30,7 @@ async def get_vagas_recomendadas(
     - Candidatos **não-PCD** não veem vagas exclusivas PCD.
     - `score` entre 0 e 1 — quanto maior, melhor o match.
     """
-    result = await recomendar_vagas(cand_id, top_k or settings.TOP_K_DEFAULT, db)
+    result = await recomendar_vagas(cand_id, top_k or settings.TOP_K_DEFAULT, db, debug=debug)
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
     return result
@@ -53,58 +56,51 @@ class CandidatoUpsertRequest(BaseModel):
 
 @router.post(
     "/indexar",
-    summary="Indexa ou reindexia um único candidato",
-    status_code=201,
+    summary="Enfileira indexação de um único candidato",
+    status_code=202,
 )
 async def indexar_candidato(
     body: CandidatoUpsertRequest,
-    db: AsyncSession = Depends(get_db),
 ):
     """
-    Monta o texto semântico, gera o embedding e salva/atualiza em
-    `candidato_embeddings`. Use quando o sistema principal criar ou editar um candidato.
+    Enfileira um job de indexação para processamento assíncrono no worker.
+    Use quando o sistema principal criar ou editar um candidato.
     """
-    from app.services.text_builder import limpar_texto
-    from app.services.embedder import EmbedderService
-    from app.models.schema import CandidatoEmbedding
-    import numpy as np
+    from app.services.job_queue import enqueue_index_job
 
-    partes = []
-    if body.habilidades:
-        partes.append("Habilidades: " + "; ".join(body.habilidades))
-    if body.experiencias:
-        partes.append("Experiência em: " + "; ".join(body.experiencias))
-    if body.formacoes:
-        partes.append("Formação: " + "; ".join(body.formacoes))
-    if body.deficiencias:
-        partes.append("PCD: " + "; ".join(body.deficiencias))
-    partes.append(f"Local: {body.cidade} {body.estado}")
+    await enqueue_index_job({
+        "entidade": "candidato",
+        "payload": body.model_dump(),
+    })
 
-    texto_limpo = limpar_texto(" ".join(partes))
-    embedder    = EmbedderService.get()
-    emb         = embedder.encode([texto_limpo])[0]
-
-    existing = await db.get(CandidatoEmbedding, body.cand_id)
-    if existing:
-        existing.texto_limpo  = texto_limpo
-        existing.is_pcd       = body.is_pcd
-        existing.embedding    = emb.astype(np.float32).tobytes()
-        existing.modelo_usado = embedder.model_path
-        acao = "atualizado"
-    else:
-        db.add(CandidatoEmbedding(
-            cand_id=body.cand_id,
-            texto_limpo=texto_limpo,
-            is_pcd=body.is_pcd,
-            embedding=emb.astype(np.float32).tobytes(),
-            modelo_usado=embedder.model_path,
-        ))
-        acao = "criado"
-
-    await db.commit()
     return {
-        "cand_id":      body.cand_id,
-        "texto_gerado": texto_limpo,
-        "modelo_usado": embedder.model_path,
-        "acao":         acao,
+        "cand_id": body.cand_id,
+        "status": "enfileirado",
     }
+
+
+# ── Deleção de embedding ──────────────────────────────────────────────────────
+
+@router.delete(
+    "/{cand_id}",
+    summary="Remove o embedding de um candidato",
+    status_code=200,
+)
+async def deletar_embedding_candidato(
+    cand_id: int,
+    db: AsyncSession = Depends(get_db_embeddings),
+):
+    """
+    Remove o embedding pré-calculado do candidato do banco de embeddings.
+    Deve ser chamado pelo sistema principal quando um candidato é deletado.
+    """
+    result = await db.execute(
+        sql_delete(CandidatoEmbedding).where(CandidatoEmbedding.cand_id == cand_id)
+    )
+    await db.commit()
+
+    if result.rowcount == 0:
+        # Não é erro crítico — embedding pode nunca ter sido gerado
+        return {"cand_id": cand_id, "status": "nao_encontrado"}
+
+    return {"cand_id": cand_id, "status": "removido"}

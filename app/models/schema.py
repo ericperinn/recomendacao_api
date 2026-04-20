@@ -22,37 +22,37 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     func,
 )
-from app.core.database import Base
+from app.core.database import BaseDados, BaseEmbeddings
 
 
 # ── Tabelas de lookup ─────────────────────────────────────────────────────────
 
 
-class Idioma(Base):
+class Idioma(BaseDados):
     __tablename__ = "idiomas"
     idio_id_idioma = Column(Integer, primary_key=True, autoincrement=True)
     idio_descricao = Column(String(30), unique=True)
 
 
-class Deficiencia(Base):
+class Deficiencia(BaseDados):
     __tablename__ = "deficiencias"
     defi_id_deficiencia = Column(Integer, primary_key=True, autoincrement=True)
     defi_descricao = Column(String(150), unique=True, nullable=False)
 
 
-class NivelEscolaridade(Base):
+class NivelEscolaridade(BaseDados):
     __tablename__ = "niveis_escolaridade"
     nesc_id_escolaridade = Column(Integer, primary_key=True, autoincrement=True)
     nesc_descricao = Column(String(30), unique=True, nullable=False)
 
 
-class AreaAtuacao(Base):
+class AreaAtuacao(BaseDados):
     __tablename__ = "areas_atuacao"
     aatu_id_categoria = Column(Integer, primary_key=True, autoincrement=True)
     aatu_descricao = Column(String, nullable=False)
 
 
-class VagaFuncao(Base):
+class VagaFuncao(BaseDados):
     __tablename__ = "vaga_funcoes"
     vfun_id_funcao = Column(Integer, primary_key=True, autoincrement=True)
     vfun_descricao = Column(String, nullable=False)
@@ -61,19 +61,19 @@ class VagaFuncao(Base):
     )
 
 
-class VagaModalidade(Base):
+class VagaModalidade(BaseDados):
     __tablename__ = "vaga_modalidades"
     vmod_id = Column(Integer, primary_key=True, autoincrement=True)
     vmod_descricao = Column(String(10), unique=True, nullable=False)
 
 
-class VagaRegime(Base):
+class VagaRegime(BaseDados):
     __tablename__ = "vaga_regimes"
     vreg_id_regime = Column(Integer, primary_key=True, autoincrement=True)
     vreg_descricao = Column(String(20), unique=True, nullable=False)
 
 
-class TurnoTrabalho(Base):
+class TurnoTrabalho(BaseDados):
     __tablename__ = "turnos_trabalho"
     tutr_id_turno = Column(Integer, primary_key=True, autoincrement=True)
     tutr_descricao = Column(String(25), unique=True, nullable=False)
@@ -82,7 +82,7 @@ class TurnoTrabalho(Base):
 # ── Candidatos ───────────────────────────────────────────────────────────────
 
 
-class Candidato(Base):
+class Candidato(BaseDados):
     __tablename__ = "candidatos"
 
     cand_id_candidato = Column(Integer, primary_key=True, autoincrement=True)
@@ -109,13 +109,13 @@ class Candidato(Base):
     cand_genero = Column(Integer, ForeignKey("generos.gene_id_genero"))
 
 
-class Genero(Base):
+class Genero(BaseDados):
     __tablename__ = "generos"
     gene_id_genero = Column(Integer, primary_key=True, autoincrement=True)
     gene_descricao = Column(String(60), unique=True, nullable=False)
 
 
-class CandidatoHabilidade(Base):
+class CandidatoHabilidade(BaseDados):
     __tablename__ = "candidato_habilidades_competencias"
     __table_args__ = (
         PrimaryKeyConstraint("chco_id_habilidade_competencia", "chco_id_candidato"),
@@ -127,7 +127,7 @@ class CandidatoHabilidade(Base):
     chco_descricao = Column(String, nullable=False)
 
 
-class CandidatoOutraHabilidade(Base):
+class CandidatoOutraHabilidade(BaseDados):
     """Habilidades em texto livre (campo único por candidato)."""
 
     __tablename__ = "candidato_outras_habilidades"
@@ -139,7 +139,7 @@ class CandidatoOutraHabilidade(Base):
     coha_descricao = Column(String, nullable=False)
 
 
-class CandidatoExperiencia(Base):
+class CandidatoExperiencia(BaseDados):
     __tablename__ = "candidato_experiencias"
     cexp_id_experiencia = Column(Integer, primary_key=True, autoincrement=True)
     cexp_id_candidato = Column(
@@ -155,7 +155,7 @@ class CandidatoExperiencia(Base):
     cexp_emprego_atual = Column(Boolean, nullable=False)
 
 
-class CandidatoFormacao(Base):
+class CandidatoFormacao(BaseDados):
     __tablename__ = "candidato_formacoes"
     cfor_id_formacao = Column(Integer, primary_key=True, autoincrement=True)
     cfor_id_candidato = Column(
@@ -172,7 +172,7 @@ class CandidatoFormacao(Base):
     cfor_ano_conclusao = Column(String(4))
 
 
-class CandidatoDeficiencia(Base):
+class CandidatoDeficiencia(BaseDados):
     __tablename__ = "candidato_deficiencias"
     __table_args__ = (PrimaryKeyConstraint("cdef_id_candidato", "cdef_id_deficiencia"),)
     cdef_id_candidato = Column(
@@ -183,7 +183,7 @@ class CandidatoDeficiencia(Base):
     )
 
 
-class CandidatoOutraDeficiencia(Base):
+class CandidatoOutraDeficiencia(BaseDados):
     """Deficiência descrita em texto livre (não está na tabela de lookup)."""
 
     __tablename__ = "candidato_outras_deficiencias"
@@ -195,7 +195,7 @@ class CandidatoOutraDeficiencia(Base):
     code_descricao = Column(String, nullable=False)
 
 
-class CandidatoAdaptacao(Base):
+class CandidatoAdaptacao(BaseDados):
     """Adaptações necessárias — texto livre, campo único por candidato."""
 
     __tablename__ = "candidato_adaptacoes"
@@ -207,7 +207,7 @@ class CandidatoAdaptacao(Base):
     cada_descricao = Column(String, nullable=False)
 
 
-class CandidatoIdioma(Base):
+class CandidatoIdioma(BaseDados):
     __tablename__ = "candidato_idiomas"
     __table_args__ = (PrimaryKeyConstraint("cidi_id_idioma", "cidi_id_candidato"),)
     cidi_id_idioma = Column(Integer, ForeignKey("idiomas.idio_id_idioma"))
@@ -221,7 +221,7 @@ class CandidatoIdioma(Base):
 # ATENÇÃO: PK composta (vaga_id_vaga, vaga_id_empresa)
 
 
-class Vaga(Base):
+class Vaga(BaseDados):
     __tablename__ = "vagas"
     __table_args__ = (PrimaryKeyConstraint("vaga_id_vaga", "vaga_id_empresa"),)
     vaga_id_vaga = Column(Integer, autoincrement=True)
@@ -245,7 +245,7 @@ class Vaga(Base):
     )
 
 
-class Empresa(Base):
+class Empresa(BaseDados):
     __tablename__ = "empresas"
     empr_id_empresa = Column(Integer, primary_key=True, autoincrement=True)
     empr_nome = Column(String(150), nullable=False)
@@ -265,7 +265,7 @@ class Empresa(Base):
     empr_logo = Column(String(255))
 
 
-class VagaHabilidade(Base):
+class VagaHabilidade(BaseDados):
     __tablename__ = "vaga_habilidades_competencias"
     __table_args__ = (
         PrimaryKeyConstraint(
@@ -283,7 +283,7 @@ class VagaHabilidade(Base):
     vhab_descricao = Column(String, nullable=False)
 
 
-class VagaConhecimento(Base):
+class VagaConhecimento(BaseDados):
     __tablename__ = "vaga_conhecimentos_tecnicos"
     __table_args__ = (
         PrimaryKeyConstraint("vcte_id_vaga", "vcte_id_empresa"),
@@ -298,7 +298,7 @@ class VagaConhecimento(Base):
     vcte_descricao = Column(String, nullable=False)
 
 
-class VagaDiferencial(Base):
+class VagaDiferencial(BaseDados):
     __tablename__ = "vaga_diferenciais"
     __table_args__ = (
         PrimaryKeyConstraint("vdif_id_vaga", "vdif_id_empresa"),
@@ -313,7 +313,7 @@ class VagaDiferencial(Base):
     vdif_descricao = Column(String, nullable=False)
 
 
-class VagaCertificacao(Base):
+class VagaCertificacao(BaseDados):
     __tablename__ = "vaga_certificacoes"
     __table_args__ = (
         PrimaryKeyConstraint("vcer_id_vaga", "vcer_id_empresa"),
@@ -328,7 +328,7 @@ class VagaCertificacao(Base):
     vcer_descricao = Column(String, nullable=False)
 
 
-class VagaOutraAreaAtuacao(Base):
+class VagaOutraAreaAtuacao(BaseDados):
     """Área de atuação em texto livre quando não existe no cadastro."""
 
     __tablename__ = "vaga_outra_area_atuacao"
@@ -345,7 +345,7 @@ class VagaOutraAreaAtuacao(Base):
     voaa_descricao = Column(String, nullable=False)
 
 
-class VagaOutroRegime(Base):
+class VagaOutroRegime(BaseDados):
     __tablename__ = "vaga_outro_regime"
     __table_args__ = (
         PrimaryKeyConstraint("vore_id_vaga", "vore_id_empresa"),
@@ -363,7 +363,7 @@ class VagaOutroRegime(Base):
 # ── Tabelas próprias da API (não existem no sistema original) ─────────────────
 
 
-class CandidatoEmbedding(Base):
+class CandidatoEmbedding(BaseEmbeddings):
     """
     Embedding pré-calculado por candidato.
     Regerado via POST /admin/recalcular-embeddings quando o modelo muda.
@@ -371,9 +371,7 @@ class CandidatoEmbedding(Base):
 
     __tablename__ = "candidato_embeddings"
 
-    cand_id = Column(
-        Integer, ForeignKey("candidatos.cand_id_candidato"), primary_key=True
-    )
+    cand_id = Column(Integer, primary_key=True)
     texto_limpo = Column(Text)
     is_pcd = Column(Boolean, default=False)
     embedding = Column(LargeBinary)  # np.ndarray float32 serializado (.tobytes())
@@ -383,7 +381,7 @@ class CandidatoEmbedding(Base):
     )
 
 
-class VagaEmbedding(Base):
+class VagaEmbedding(BaseEmbeddings):
     """
     Embedding pré-calculado por vaga.
     PK simples aqui (vaga_id apenas) — vaga_id_empresa fica como coluna auxiliar

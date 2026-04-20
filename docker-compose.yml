@@ -1,38 +1,80 @@
 services:
-  postgres:
+  db_embeddings:
     image: postgres:16-alpine
-    container_name: recomendacao_db
+    container_name: recomendacao_db_embeddings
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-recomendacao}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-recomendacao}
-      POSTGRES_DB: ${POSTGRES_DB:-recomendacao}
+      POSTGRES_DB: ${POSTGRES_DB_EMBEDDINGS:-recomendacao_embeddings}
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data_embeddings:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U recomendacao"]
       interval: 5s
       timeout: 5s
       retries: 5
 
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: recomendacao_rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-recomendacao}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-recomendacao}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   api:
+    image: recomendacao_api:local
     build: .
     container_name: recomendacao_api
     depends_on:
-      postgres:
+      db_embeddings:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://recomendacao:recomendacao@postgres:5432/recomendacao
+      - DATABASE_URL_DADOS=${DATABASE_URL_DADOS:-postgresql+asyncpg://maisacesso:maisacesso@host.docker.internal:5434/maisacesso}
+      - DATABASE_URL_EMBEDDINGS=postgresql+asyncpg://recomendacao:recomendacao@db_embeddings:5432/recomendacao_embeddings
+      - BROKER_URL=amqp://recomendacao:recomendacao@rabbitmq:5672/
       - MODEL_PATH=${MODEL_PATH:-paraphrase-multilingual-mpnet-base-v2}
       - TOP_K_DEFAULT=10
     volumes:
       # monta os CSVs e o modelo fine-tuned sem rebuildar a imagem
       - ./dados:/app/dados
       - ./modelos:/app/modelos
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  worker:
+    image: recomendacao_api:local
+    build: .
+    container_name: recomendacao_worker
+    depends_on:
+      api:
+        condition: service_started
+      db_embeddings:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL_EMBEDDINGS=postgresql+asyncpg://recomendacao:recomendacao@db_embeddings:5432/recomendacao_embeddings
+      - BROKER_URL=amqp://recomendacao:recomendacao@rabbitmq:5672/
+      - MODEL_PATH=${MODEL_PATH:-paraphrase-multilingual-mpnet-base-v2}
+    volumes:
+      - ./modelos:/app/modelos
+    command: python -m app.scripts.index_worker
 
 volumes:
-  postgres_data:
+  postgres_data_embeddings:
+  rabbitmq_data:
