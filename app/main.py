@@ -1,17 +1,48 @@
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core.database import engine, Base
+from app.core.database import engine_dados, engine_embeddings
+from app.models.schema import BaseDados, BaseEmbeddings
 from app.routers import candidatos, vagas, admin
+
+logger = logging.getLogger("uvicorn.error")
+
+
+async def _initialize_databases(max_attempts: int = 10, delay_seconds: float = 2.0) -> None:
+    """Cria schema com retry para tolerar atrasos na subida dos bancos."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with engine_dados.begin() as conn:
+                await conn.run_sync(BaseDados.metadata.create_all)
+
+            async with engine_embeddings.begin() as conn:
+                await conn.run_sync(BaseEmbeddings.metadata.create_all)
+
+            if attempt > 1:
+                logger.info("Conexao com bancos restabelecida na tentativa %s.", attempt)
+            return
+        except OSError as exc:
+            if attempt == max_attempts:
+                raise
+
+            logger.warning(
+                "Falha ao conectar nos bancos (tentativa %s/%s): %s. Nova tentativa em %.1fs.",
+                attempt,
+                max_attempts,
+                exc,
+                delay_seconds,
+            )
+            await asyncio.sleep(delay_seconds)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Cria tabelas na inicialização (safe — não destrói dados existentes)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Cria tabelas na inicializacao (safe — nao destroi dados existentes).
+    await _initialize_databases()
     yield
 
 

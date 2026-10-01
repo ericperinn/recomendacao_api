@@ -8,18 +8,18 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 
 # Importa os modelos para que o Alembic detecte as tabelas
-from app.models.schema import Base  # noqa: F401
+from app.models.schema import BaseDados  # noqa: F401
 from app.core.config import settings
 
 config = context.config
 
-# Usa DATABASE_URL do .env em vez do alembic.ini
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Usa DATABASE_URL_DADOS do .env em vez do alembic.ini
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL_DADOS)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = Base.metadata
+target_metadata = BaseDados.metadata
 
 
 def run_migrations_offline() -> None:
